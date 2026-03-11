@@ -28,7 +28,7 @@ app.add_middleware(
         "http://localhost:5001",
         "http://127.0.0.1:5001",
         # ── Vercel production + previews ──────────────────────────────
-        "https://vigilora-dashboard.vercel.app",   # ← update to your actual Vercel URL
+        "https://vigilora-dashboard.vercel.app",
         "https://*.vercel.app",                    # covers all preview deployments
     ],
     allow_credentials=True,
