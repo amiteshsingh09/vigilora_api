@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.pkl
+venv/
+.env
+.venv/
+
+# Node / Next.js (inside vigilora subfolder)
+vigilora/node_modules/
+vigilora/.next/
+vigilora/.env.local
+
+# Data files (do NOT commit real transaction data)
+*.xlsx
+*.xls
