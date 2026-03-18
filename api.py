@@ -369,12 +369,12 @@ _result_cache: dict[str, pd.DataFrame] = {}
 def root():
     return {"status": "Vigilora AML API v3.4", "docs": "/docs"}
 
-@app.get("/api/health")
+@app.get("/health")
 def health():
     return {"status": "ok"}
 
 
-@app.post("/api/analyze")
+@app.post("/analyze")
 async def analyze(file: UploadFile = File(...)):
     if not file.filename.endswith(('.xlsx', '.xls')):
         raise HTTPException(400, "Only .xlsx / .xls files are supported.")
@@ -712,7 +712,7 @@ async def analyze(file: UploadFile = File(...)):
     })
 
 
-@app.get("/api/sar/{cache_key}/{row_index}")
+@app.get("/sar/{cache_key}/{row_index}")
 async def get_sar(cache_key: str, row_index: int):
     """Generate full SAR narrative for a specific HIGH risk transaction (JSON formatting)."""
     df = _result_cache.get(cache_key)
@@ -728,7 +728,7 @@ async def get_sar(cache_key: str, row_index: int):
     return JSONResponse({"text": text})
 
 
-@app.get("/api/sar/download/{cache_key}/{row_index}")
+@app.get("/sar/download/{cache_key}/{row_index}")
 async def download_sar_docx(cache_key: str, row_index: int):
     """Generate and download SAR narrative as a standard Word (.docx) file."""
     df = _result_cache.get(cache_key)
@@ -792,7 +792,7 @@ async def download_sar_docx(cache_key: str, row_index: int):
     )
 
 
-@app.get("/api/export/{cache_key}")
+@app.get("/export/{cache_key}")
 async def export_excel(cache_key: str):
     """Export full analysis as Excel with 4 sheets."""
     df = _result_cache.get(cache_key)
