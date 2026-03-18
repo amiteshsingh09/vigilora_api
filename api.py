@@ -382,7 +382,22 @@ async def analyze(file: UploadFile = File(...)):
     contents = await file.read()
     try:
         df_raw    = load_excel(io.BytesIO(contents))
+        # Rule scores
         scores    = compute_risk_scores(df_raw)
+        
+        # Inject ML Hybrid scoring if models are trained
+        try:
+            from app.ml.predict import models_ready, merge_ml_with_rules, score_features
+            from app.ml.features import build_features
+            if models_ready():
+                X, _ = build_features(df_raw)
+                ml_sc = score_features(X)
+                blended = merge_ml_with_rules(scores['score'], ml_sc)
+                scores['score'] = blended
+                scores['risk_level'] = blended.apply(lambda s: 'HIGH' if s >= 70 else ('MEDIUM' if s >= 40 else 'LOW'))
+        except Exception as e:
+            print(f"ML injection failed, falling back to rules: {e}")
+            
         df_result = merge_results(df_raw, scores)
     except Exception as e:
         raise HTTPException(500, f"Scoring failed: {e}")
