@@ -15,5 +15,3 @@ vigilora/.next/
 vigilora/.env.local
 
 # Data files (do NOT commit real transaction data)
-*.xlsx
-*.xls
