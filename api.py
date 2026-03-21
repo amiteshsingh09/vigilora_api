@@ -367,11 +367,11 @@ _result_cache: dict[str, pd.DataFrame] = {}
 # ─── ENDPOINTS ───────────────────────────────────────────────────────────────
 @app.get("/")
 def root():
-    return {"status": "Vigilora AML API v3.1", "docs": "/docs"}
+    return {"status": "Vigilora AML API v3.9", "docs": "/docs"}
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok"}
+    return {"status": "ok v10"}
 
 
 @app.get("/api/analyze/stored")
