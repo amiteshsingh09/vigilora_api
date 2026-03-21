@@ -379,7 +379,9 @@ def health():
 @app.get("/analyze/stored")
 async def analyze_stored():
     import os
-    file_path = r"D:\AmiteshCodes\Github\FalconIq-Dashboard\aml_dashboard_export_2026-02-16.xlsx"
+    # Use path relative to the location of this script
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    file_path = os.path.join(base_dir, "aml_dashboard_export_2026-02-16.xlsx")
     if not os.path.exists(file_path):
         raise HTTPException(404, "Stored Excel file not found on the server.")
     
