@@ -370,11 +370,13 @@ def root():
     return {"status": "Vigilora AML API v3.9", "docs": "/docs"}
 
 @app.get("/api/health")
+@app.get("/health")
 def health():
     return {"status": "ok v10"}
 
 
 @app.get("/api/analyze/stored")
+@app.get("/analyze/stored")
 async def analyze_stored():
     import os
     file_path = r"D:\AmiteshCodes\Github\FalconIq-Dashboard\aml_dashboard_export_2026-02-16.xlsx"
@@ -395,6 +397,7 @@ async def analyze_stored():
 
 
 @app.post("/api/analyze")
+@app.post("/analyze")
 async def analyze(file: UploadFile = File(...)):
     if not file.filename.endswith(('.xlsx', '.xls')):
         raise HTTPException(400, "Only .xlsx / .xls files are supported.")

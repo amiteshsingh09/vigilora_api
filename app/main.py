@@ -65,7 +65,7 @@ except Exception as e:
 @app.get("/", tags=["Health"])
 def root():
     return {
-        "status":        "Vigilora AML API v3 â€” ML-powered",
+        "status":        "Vigilora AML API v3.9 â€” ML-powered",
         "docs":          "/docs",
         "legacy_api":    "/api (backward-compat)" if _legacy_mounted else "not mounted",
         "new_endpoints": ["/transactions", "/alerts", "/model"],
