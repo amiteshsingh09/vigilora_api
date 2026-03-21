@@ -367,14 +367,34 @@ _result_cache: dict[str, pd.DataFrame] = {}
 # ─── ENDPOINTS ───────────────────────────────────────────────────────────────
 @app.get("/")
 def root():
-    return {"status": "Vigilora AML API v3.4", "docs": "/docs"}
+    return {"status": "Vigilora AML API v3.1", "docs": "/docs"}
 
-@app.get("/health")
+@app.get("/api/health")
 def health():
     return {"status": "ok"}
 
 
-@app.post("/analyze")
+@app.get("/api/analyze/stored")
+async def analyze_stored():
+    import os
+    file_path = r"D:\AmiteshCodes\Github\FalconIq-Dashboard\aml_dashboard_export_2026-02-16.xlsx"
+    if not os.path.exists(file_path):
+        raise HTTPException(404, "Stored Excel file not found on the server.")
+    
+    with open(file_path, "rb") as f:
+        contents = f.read()
+        
+    class MockUploadFile:
+        def __init__(self, content_bytes):
+            self.filename = "aml_dashboard_export_2026-02-16.xlsx"
+            self.content_bytes = content_bytes
+        async def read(self):
+            return self.content_bytes
+            
+    return await analyze(file=MockUploadFile(contents))
+
+
+@app.post("/api/analyze")
 async def analyze(file: UploadFile = File(...)):
     if not file.filename.endswith(('.xlsx', '.xls')):
         raise HTTPException(400, "Only .xlsx / .xls files are supported.")
@@ -389,10 +409,56 @@ async def analyze(file: UploadFile = File(...)):
         try:
             from app.ml.predict import models_ready, merge_ml_with_rules, score_features
             from app.ml.features import build_features
+            from app.ml.explain import explain_batch
+
             if models_ready():
                 X, _ = build_features(df_raw)
                 ml_sc = score_features(X)
                 blended = merge_ml_with_rules(scores['score'], ml_sc)
+                
+                # ------ ENTERPRISE SHAP ALERTS ------
+                # Fetch SHAP explanations for all rows
+                shap_explanations = explain_batch(X, top_n=3)
+                SHAP_IMPACT_MIN_THRESHOLD = 1.5  # Only features with log-odds > 1.5 are considered severe
+                
+                for i, exps in enumerate(shap_explanations):
+                    if not exps:
+                        continue
+                    
+                    idx = blended.index[i]
+                    shap_penalty = 0
+                    alert_reasons = []
+                    
+                    for e in exps:
+                        if e['impact'] >= SHAP_IMPACT_MIN_THRESHOLD:
+                            # Dynamic penalty based on SHAP severity (capped at 30 pts per feature)
+                            penalty = min(int((e['impact'] - 1.0) * 15), 30) 
+                            if penalty > 0:
+                                shap_penalty += penalty
+                                alert_reasons.append(f"AI Risk Indicator: {e['label']} (+{penalty} pts)")
+                    
+                    if shap_penalty > 0:
+                        # Cap total overall penalty from SHAP to +40 to prevent runaway scores
+                        shap_penalty = min(shap_penalty, 40)
+                        
+                        # Soft-scale the blended score instead of a hard override
+                        blended.iloc[i] = min(blended.iloc[i] + shap_penalty, 100)
+                        
+                        # Add professional justifications for the MLRO
+                        curr_flags = scores.at[idx, 'flags']
+                        new_flags = " | ".join(alert_reasons)
+                        if curr_flags == 'No flags':
+                            scores.at[idx, 'flags'] = new_flags
+                        else:
+                            scores.at[idx, 'flags'] = str(curr_flags) + " | " + new_flags
+                            
+                        curr_bk = scores.at[idx, 'score_breakdown']
+                        new_bk = f"ML Interpretability Penalty +{shap_penalty}"
+                        if curr_bk == 'No risk points scored':
+                            scores.at[idx, 'score_breakdown'] = new_bk
+                        elif new_bk not in str(curr_bk):
+                            scores.at[idx, 'score_breakdown'] = str(curr_bk) + ", " + new_bk
+
                 scores['score'] = blended
                 scores['risk_level'] = blended.apply(lambda s: 'HIGH' if s >= 70 else ('MEDIUM' if s >= 40 else 'LOW'))
         except Exception as e:
@@ -406,11 +472,17 @@ async def analyze(file: UploadFile = File(...)):
     cache_key = str(hash(contents))
     _result_cache[cache_key] = df_result
 
+    def get_elevated_mean(scores):
+        if scores is None or scores.empty:
+            return 0.0
+        elevated = scores[scores >= 40]
+        return float(elevated.mean()) if not elevated.empty else float(scores.mean())
+
     total      = len(df_result)
     high_n     = int((df_result['Risk Level'] == 'HIGH').sum())
     med_n      = int((df_result['Risk Level'] == 'MEDIUM').sum())
     low_n      = int((df_result['Risk Level'] == 'LOW').sum())
-    avg_score  = float(df_result['Risk Score'].mean())
+    avg_score  = get_elevated_mean(df_result['Risk Score'])
 
     sc_col  = safe_col(df_result, 'SENDER ADDRESS COUNTRY', 'Sender Country')
     rc_col  = safe_col(df_result, 'RECEIVER ADDRESS COUNTRY', 'Receiver Country (Legacy)', 'Receiver Country')
@@ -467,7 +539,7 @@ async def analyze(file: UploadFile = File(...)):
 
                 # Daily
                 grp_d = df_dated.groupby(df_dated['_date'].dt.date)
-                sc_d  = grp_d['Risk Score'].mean()
+                sc_d  = grp_d['Risk Score'].apply(get_elevated_mean)
                 hi_d  = grp_d['Risk Level'].apply(lambda x: (x == 'HIGH').sum())
                 am_d  = grp_d[amt_col].mean() if amt_col else None
                 for day, score in sc_d.items():
@@ -480,7 +552,7 @@ async def analyze(file: UploadFile = File(...)):
                 # Weekly
                 df_dated['_week'] = df_dated['_date'].dt.to_period('W').dt.start_time.dt.date
                 grp_w = df_dated.groupby('_week')
-                sc_w  = grp_w['Risk Score'].mean()
+                sc_w  = grp_w['Risk Score'].apply(get_elevated_mean)
                 hi_w  = grp_w['Risk Level'].apply(lambda x: (x == 'HIGH').sum())
                 am_w  = grp_w[amt_col].mean() if amt_col else None
                 for wk, score in sc_w.items():
@@ -493,7 +565,7 @@ async def analyze(file: UploadFile = File(...)):
                 # Monthly
                 df_dated['_month'] = df_dated['_date'].dt.to_period('M').dt.start_time.dt.date
                 grp_m = df_dated.groupby('_month')
-                sc_m  = grp_m['Risk Score'].mean()
+                sc_m  = grp_m['Risk Score'].apply(get_elevated_mean)
                 hi_m  = grp_m['Risk Level'].apply(lambda x: (x == 'HIGH').sum())
                 am_m  = grp_m[amt_col].mean() if amt_col else None
                 for mo, score in sc_m.items():
@@ -511,7 +583,7 @@ async def analyze(file: UploadFile = File(...)):
         bsz = max(1, total // 8)
         for i in range(min(8, total)):
             chunk = df_result.iloc[i*bsz:(i+1)*bsz]
-            p = {"label": f"Batch {i+1}", "score": round(float(chunk['Risk Score'].mean()), 1),
+            p = {"label": f"Batch {i+1}", "score": round(get_elevated_mean(chunk['Risk Score']), 1),
                  "highCount": int((chunk['Risk Level'] == 'HIGH').sum())}
             if amt_col:
                 p["avgAmount"] = round(float(pd.to_numeric(chunk[amt_col], errors='coerce').mean()), 2)
@@ -687,6 +759,106 @@ async def analyze(file: UploadFile = File(...)):
         alerts.append({"id": "anomaly", "icon": "bar-chart", "title": f"{len(anomalies)} statistical anomalies detected (|Z|>2)", "severity": "warning", "timestamp": "Just now"})
     alerts.append({"id": "kyc", "icon": "alert", "title": "KYC Verification required for HIGH risk account holders", "severity": "danger", "timestamp": "Just now"})
 
+    # --- Customer Profiles ---
+    fn_col = safe_col(df_result, 'SENDER FIRST NAME', 'Sender First Name')
+    ln_col = safe_col(df_result, 'SENDER LAST NAME', 'Sender Last Name')
+    customers_dict = {}
+    
+    for _, row in df_result.iterrows():
+        fname = str(row[fn_col]).strip() if pd.notna(row.get(fn_col)) else ""
+        lname = str(row[ln_col]).strip() if pd.notna(row.get(ln_col)) else ""
+        full_name = f"{fname} {lname}".strip()
+        
+        ref = str(row.get(ref_col, ''))
+        cust_id = full_name if full_name else ref
+        if not cust_id: continue
+        
+        score = float(row.get('Risk Score', 0))
+        h_rc = str(row.get(rc_col, '')).upper()
+        h_sc = str(row.get(sc_col, '')).upper()
+        is_fatf = h_rc in FATF_HIGH_RISK or h_sc in FATF_HIGH_RISK
+        
+        tx_date = str(row.get(date_col, '2026-02-14'))[:10]
+        flags = str(row.get('Risk Flags', 'None'))
+        mcc = str(row.get(mcc_col, ''))
+        
+        if cust_id not in customers_dict:
+            addr_line = str(row.get('SENDER ADDRESS LINE', ''))
+            city = str(row.get('SENDER ADDRESS CITY', ''))
+            state = str(row.get('SENDER ADDRESS STATE', ''))
+            zip_code = str(row.get('SENDER ADDRESS POSTAL', ''))
+            
+            card = str(row.get('CARD NUMBER', 'XXXX'))
+            card_masked = f"****{card[-4:]}" if len(card) >= 4 else "****"
+            acct_type = str(row.get('CARD PRODUCT TYPE', 'Checking'))
+            employer = str(row.get('Merchant Name', 'MegaGrocer Inc'))
+            
+            customers_dict[cust_id] = {
+                "id": f"cust-{ref if ref else hash(cust_id)}",
+                "customerNumber": ref if ref else f"CUST-{abs(hash(cust_id))%1000000}",
+                "name": full_name if full_name else "Unknown Customer",
+                "dob": "1980-01-01",
+                "joiningDate": "2020-01-01",
+                "ssn": f"XXX-XX-{ref[-4:] if ref else str(hash(cust_id))[-4:]}",
+                "phone": f"1-800-555-{ref[-4:] if ref else str(hash(cust_id))[-4:]}",
+                "email": f"{full_name.replace(' ', '').lower()}@example.com" if full_name else "customer@example.com",
+                "riskScore": score,
+                "hasFatf": is_fatf,
+                "addresses": [{
+                    "label": "Current",
+                    "line1": addr_line,
+                    "line2": "",
+                    "city": city,
+                    "state": state,
+                    "zip": zip_code,
+                    "country": h_sc
+                }],
+                "accounts": [{
+                    "number": card_masked,
+                    "type": acct_type,
+                    "currency": str(row.get('Transaction Currency Code', 'USD')),
+                    "status": "Active",
+                    "opened": "2020-01-01"
+                }],
+                "work": {
+                    "employer": employer,
+                    "industry": mcc,
+                    "occupation": "Private Client",
+                    "since": "2020",
+                    "annualIncome": "Confidential"
+                },
+                "cases": [],
+                "alertHistory": []
+            }
+        
+        cust = customers_dict[cust_id]
+        if score > cust["riskScore"]:
+            cust["riskScore"] = score
+        if is_fatf:
+            cust["hasFatf"] = True
+            
+        if score >= 40:
+            cust["alertHistory"].append({
+                "ref": ref,
+                "date": tx_date,
+                "decision": "Under Review",
+                "score": score,
+                "flags": flags
+            })
+            
+    customers = []
+    for cd in customers_dict.values():
+        if cd["riskScore"] >= 80:
+            c_ref = cd["customerNumber"][-4:]
+            cd["cases"].append({
+                "id": f"CASE-2026-{c_ref}",
+                "type": "AML Investigation",
+                "status": "Open",
+                "opened": "2026-02-14",
+                "description": "Triggered by high risk rule engine scoring."
+            })
+        customers.append(cd)
+
     return JSONResponse({
         "cacheKey":        cache_key,
         "kpis":            kpis,
@@ -709,10 +881,11 @@ async def analyze(file: UploadFile = File(...)):
         "trendMonthly":    trend_monthly,
         "defaultView":     default_view,
         "network":         network,
+        "customers":       customers,
     })
 
 
-@app.get("/sar/{cache_key}/{row_index}")
+@app.get("/api/sar/{cache_key}/{row_index}")
 async def get_sar(cache_key: str, row_index: int):
     """Generate full SAR narrative for a specific HIGH risk transaction (JSON formatting)."""
     df = _result_cache.get(cache_key)
@@ -728,7 +901,7 @@ async def get_sar(cache_key: str, row_index: int):
     return JSONResponse({"text": text})
 
 
-@app.get("/sar/download/{cache_key}/{row_index}")
+@app.get("/api/sar/download/{cache_key}/{row_index}")
 async def download_sar_docx(cache_key: str, row_index: int):
     """Generate and download SAR narrative as a standard Word (.docx) file."""
     df = _result_cache.get(cache_key)
@@ -792,7 +965,7 @@ async def download_sar_docx(cache_key: str, row_index: int):
     )
 
 
-@app.get("/export/{cache_key}")
+@app.get("/api/export/{cache_key}")
 async def export_excel(cache_key: str):
     """Export full analysis as Excel with 4 sheets."""
     df = _result_cache.get(cache_key)
