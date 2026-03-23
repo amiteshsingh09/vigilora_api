@@ -1,4 +1,4 @@
-﻿"""
+"""
 Vigilora AML â€” FastAPI Entry Point (v3 â€” ML-powered)
 
 New modular backend:
@@ -17,6 +17,22 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    import warnings
+    warnings.filterwarnings("ignore")
+    # Preload models to avoid cold starts on first request
+    from app.ml.predict import _load_models
+    from app.ml.explain import _load_explainer
+    try:
+        _load_models()
+        _load_explainer()
+        print("ML models loaded successfully at startup.")
+    except Exception as e:
+        print(f"Failed to preload ML models at startup: {e}")
+    yield
 
 from app.routes import transactions, alerts, model
 
@@ -28,6 +44,7 @@ app = FastAPI(
         "ML-powered Anti-Money Laundering backend with XGBoost + IsolationForest scoring, "
         "SHAP explanations, alert management, and full backward compatibility with v2 endpoints."
     ),
+    lifespan=lifespan,
 )
 
 # â”€â”€ CORS (same origins as legacy api.py) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

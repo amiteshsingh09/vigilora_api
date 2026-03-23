@@ -29,8 +29,12 @@ async def analyze_stored():
     if not os.path.exists(file_path):
         raise HTTPException(404, "Stored Excel file not found on the server.")
     
-    with open(file_path, "rb") as f:
-        contents = f.read()
+    from fastapi.concurrency import run_in_threadpool
+    def read_file():
+        with open(file_path, "rb") as f:
+            return f.read()
+            
+    contents = await run_in_threadpool(read_file)
         
     class MockUploadFile:
         def __init__(self, content_bytes):
@@ -48,8 +52,9 @@ async def analyze(file: UploadFile = File(...)):
         raise HTTPException(400, "Only .xlsx / .xls files are supported.")
 
     contents = await file.read()
-    try:
-        df_raw    = load_excel(io.BytesIO(contents))
+    
+    def process_analysis(file_contents):
+        df_raw    = load_excel(io.BytesIO(file_contents))
         # Rule scores
         scores    = compute_risk_scores(df_raw)
         
@@ -106,14 +111,19 @@ async def analyze(file: UploadFile = File(...)):
             print(f"ML injection failed, falling back to rules: {e}")
             
         df_result = merge_results(df_raw, scores)
+        
+        # Cache for SAR/export endpoints
+        cache_key = str(hash(file_contents))
+        _result_cache[cache_key] = df_result
+
+        return build_analysis_response(df_result, cache_key)
+
+    try:
+        from fastapi.concurrency import run_in_threadpool
+        analysis_response = await run_in_threadpool(process_analysis, contents)
     except Exception as e:
         raise HTTPException(500, f"Scoring failed: {e}")
 
-    # Cache for SAR/export endpoints
-    cache_key = str(hash(contents))
-    _result_cache[cache_key] = df_result
-
-    analysis_response = build_analysis_response(df_result, cache_key)
     return JSONResponse(analysis_response)
 
 
